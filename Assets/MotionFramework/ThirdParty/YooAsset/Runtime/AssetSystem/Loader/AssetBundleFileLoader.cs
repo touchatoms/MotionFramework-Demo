@@ -15,7 +15,8 @@ namespace YooAsset
 			CheckDownload,
 			Unpack,
 			CheckUnpack,
-			LoadFile,
+			LoadBundleFile,
+			LoadDeliveryFile,
 			CheckLoadFile,
 			Done,
 		}
@@ -59,18 +60,23 @@ namespace YooAsset
 					}
 					else
 					{
-						_steps = ESteps.LoadFile;
+						_steps = ESteps.LoadBundleFile;
 						FileLoadPath = MainBundleInfo.Bundle.StreamingFilePath;
 					}
 #else
-					_steps = ESteps.LoadFile;
+					_steps = ESteps.LoadBundleFile;
 					FileLoadPath = MainBundleInfo.Bundle.StreamingFilePath;
 #endif
 				}
 				else if (MainBundleInfo.LoadMode == BundleInfo.ELoadMode.LoadFromCache)
 				{
-					_steps = ESteps.LoadFile;
+					_steps = ESteps.LoadBundleFile;
 					FileLoadPath = MainBundleInfo.Bundle.CachedDataFilePath;
+				}
+				else if (MainBundleInfo.LoadMode == BundleInfo.ELoadMode.LoadFromDelivery)
+				{
+					_steps = ESteps.LoadDeliveryFile;
+					FileLoadPath = MainBundleInfo.DeliveryFilePath;
 				}
 				else
 				{
@@ -82,7 +88,8 @@ namespace YooAsset
 			if (_steps == ESteps.Download)
 			{
 				int failedTryAgain = Impl.DownloadFailedTryAgain;
-				_downloader = DownloadSystem.BeginDownload(MainBundleInfo, failedTryAgain);
+				_downloader = DownloadSystem.CreateDownload(MainBundleInfo, failedTryAgain);
+				_downloader.SendRequest();
 				_steps = ESteps.CheckDownload;
 			}
 
@@ -102,16 +109,18 @@ namespace YooAsset
 				}
 				else
 				{
-					_steps = ESteps.LoadFile;
+					_steps = ESteps.LoadBundleFile;
+					return; //下载完毕等待一帧再去加载！
 				}
 			}
 
 			// 3. 内置文件解压
 			if (_steps == ESteps.Unpack)
 			{
-				int failedTryAgain = 1;
-				var bundleInfo = ManifestTools.GetUnpackInfo(MainBundleInfo.Bundle);
-				_unpacker = DownloadSystem.BeginDownload(bundleInfo, failedTryAgain);
+				int failedTryAgain = Impl.DownloadFailedTryAgain;
+				var bundleInfo = ManifestTools.ConvertToUnpackInfo(MainBundleInfo.Bundle);
+				_unpacker = DownloadSystem.CreateDownload(bundleInfo, failedTryAgain);
+				_unpacker.SendRequest();
 				_steps = ESteps.CheckUnpack;
 			}
 
@@ -131,12 +140,12 @@ namespace YooAsset
 				}
 				else
 				{
-					_steps = ESteps.LoadFile;
+					_steps = ESteps.LoadBundleFile;
 				}
 			}
 
 			// 5. 加载AssetBundle
-			if (_steps == ESteps.LoadFile)
+			if (_steps == ESteps.LoadBundleFile)
 			{
 #if UNITY_EDITOR
 				// 注意：Unity2017.4编辑器模式下，如果AssetBundle文件不存在会导致编辑器崩溃，这里做了预判。
@@ -211,7 +220,35 @@ namespace YooAsset
 				_steps = ESteps.CheckLoadFile;
 			}
 
-			// 6. 检测AssetBundle加载结果
+			// 6. 加载AssetBundle
+			if (_steps == ESteps.LoadDeliveryFile)
+			{
+				// 设置下载进度
+				DownloadProgress = 1f;
+				DownloadedBytes = (ulong)MainBundleInfo.Bundle.FileSize;
+
+				// Load assetBundle file
+				var loadMethod = (EBundleLoadMethod)MainBundleInfo.Bundle.LoadMethod;
+				if (loadMethod == EBundleLoadMethod.Normal)
+				{
+					ulong offset = MainBundleInfo.DeliveryFileOffset;
+					if (_isWaitForAsyncComplete)
+						CacheBundle = AssetBundle.LoadFromFile(FileLoadPath, 0, offset);
+					else
+						_createRequest = AssetBundle.LoadFromFileAsync(FileLoadPath, 0, offset);
+				}
+				else
+				{
+					_steps = ESteps.Done;
+					Status = EStatus.Failed;
+					LastError = $"Delivery file not support encryption : {MainBundleInfo.Bundle.BundleName}";
+					YooLogger.Error(LastError);
+					return;
+				}
+				_steps = ESteps.CheckLoadFile;
+			}
+
+			// 7. 检测AssetBundle加载结果
 			if (_steps == ESteps.CheckLoadFile)
 			{
 				if (_createRequest != null)
@@ -233,21 +270,46 @@ namespace YooAsset
 				// Check error			
 				if (CacheBundle == null)
 				{
-					_steps = ESteps.Done;
-					Status = EStatus.Failed;
-					LastError = $"Failed to load assetBundle : {MainBundleInfo.Bundle.BundleName}";
-					YooLogger.Error(LastError);
-
 					// 注意：当缓存文件的校验等级为Low的时候，并不能保证缓存文件的完整性。
 					// 在AssetBundle文件加载失败的情况下，我们需要重新验证文件的完整性！
 					if (MainBundleInfo.LoadMode == BundleInfo.ELoadMode.LoadFromCache)
 					{
 						var result = CacheSystem.VerifyingRecordFile(MainBundleInfo.Bundle.PackageName, MainBundleInfo.Bundle.CacheGUID);
-						if (result != EVerifyResult.Succeed)
+						if (result == EVerifyResult.Succeed)
 						{
-							YooLogger.Error($"Found possibly corrupt file ! {MainBundleInfo.Bundle.CacheGUID}");
+							// 说明：在安卓移动平台，华为和三星真机上有极小概率加载资源包失败。
+							// 大多数情况在首次安装下载资源到沙盒内，游戏过程中切换到后台再回到游戏内有很大概率触发！
+							byte[] fileData = FileUtility.ReadAllBytes(FileLoadPath);
+							if (fileData != null && fileData.Length > 0)
+								CacheBundle = AssetBundle.LoadFromMemory(fileData);
+							if (CacheBundle == null)
+							{
+								_steps = ESteps.Done;
+								Status = EStatus.Failed;
+								LastError = $"Failed to load assetBundle from memory : {MainBundleInfo.Bundle.BundleName}";
+								YooLogger.Error(LastError);
+							}
+							else
+							{
+								_steps = ESteps.Done;
+								Status = EStatus.Succeed;
+							}
+						}
+						else
+						{
+							_steps = ESteps.Done;
+							Status = EStatus.Failed;
+							LastError = $"Found possibly corrupt file ! {MainBundleInfo.Bundle.CacheGUID} Verify result : {result}";
+							YooLogger.Error(LastError);
 							CacheSystem.DiscardFile(MainBundleInfo.Bundle.PackageName, MainBundleInfo.Bundle.CacheGUID);
 						}
+					}
+					else
+					{
+						_steps = ESteps.Done;
+						Status = EStatus.Failed;
+						LastError = $"Failed to load assetBundle : {MainBundleInfo.Bundle.BundleName}";
+						YooLogger.Error(LastError);
 					}
 				}
 				else
@@ -261,9 +323,9 @@ namespace YooAsset
 		/// <summary>
 		/// 销毁
 		/// </summary>
-		public override void Destroy(bool forceDestroy)
+		public override void Destroy()
 		{
-			base.Destroy(forceDestroy);
+			base.Destroy();
 
 			if (_stream != null)
 			{

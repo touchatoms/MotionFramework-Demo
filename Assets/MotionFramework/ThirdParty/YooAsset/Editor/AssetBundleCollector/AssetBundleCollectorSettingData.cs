@@ -94,7 +94,8 @@ namespace YooAsset.Editor
 					typeof(AddressByFileName),
 					typeof(AddressByFilePath),
 					typeof(AddressByFolderAndFileName),
-					typeof(AddressByGroupAndFileName)
+					typeof(AddressByGroupAndFileName),
+					typeof(AddressDisable)
 				};
 
 				var customTypes = EditorTools.GetAssignableTypes(typeof(IAddressRule));
@@ -161,7 +162,7 @@ namespace YooAsset.Editor
 		/// </summary>
 		public static void FixFile()
 		{
-			bool isFixed = Setting.FixConfigError();
+			bool isFixed = Setting.FixAllPackageConfigError();
 			if (isFixed)
 			{
 				IsDirty = true;
@@ -329,6 +330,16 @@ namespace YooAsset.Editor
 		public static void ModifyAddressable(bool enableAddressable)
 		{
 			Setting.EnableAddressable = enableAddressable;
+			IsDirty = true;
+		}
+		public static void ModifyLocationToLower(bool locationToLower)
+		{
+			Setting.LocationToLower = locationToLower;
+			IsDirty = true;
+		}
+		public static void ModifyIncludeAssetGUID(bool includeAssetGUID)
+		{
+			Setting.IncludeAssetGUID = includeAssetGUID;
 			IsDirty = true;
 		}
 		public static void ModifyUniqueBundleName(bool uniqueBundleName)

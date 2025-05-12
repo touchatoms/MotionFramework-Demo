@@ -231,7 +231,8 @@ namespace MotionFramework.Resource
 		/// </summary>
 		public void ClearSandbox()
 		{
-			YooAssets.ClearSandbox();
+			// YooAssets.ClearSandbox();
+			
 		}
 
 		/// <summary>
@@ -239,7 +240,8 @@ namespace MotionFramework.Resource
 		/// </summary>
 		public static string GetSandboxRoot()
 		{
-			return YooAssets.GetSandboxRoot();
+			// return YooAssets.GetSandboxRoot();
+			return "";
 		}
 		#endregion
 	}
